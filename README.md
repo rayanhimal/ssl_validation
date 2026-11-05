@@ -1,10 +1,11 @@
 # SSL Certificate Validator
 
 A desktop tool (Python + Tkinter) to check the SSL/TLS certificates customers send you.
+Clean macOS-style interface; uses SF Pro / Helvetica Neue on macOS and Segoe UI on Windows.
 
 ## Features
 
-**Validate certificate / chain** tab
+**Validate** (switch pages with the segmented control in the header)
 - **Browse a folder**: every certificate file in it (and sub-folders) is listed with a quick summary
   (CN, how many leaf / intermediate / root certificates it contains). Expired or expiring files are highlighted.
 - Click a file to see its **chain** (Root → Intermediate → Leaf) and a list of checks:
@@ -14,14 +15,13 @@ A desktop tool (Python + Tkinter) to check the SSL/TLS certificates customers se
   - certificates in the file are in the right order (leaf first), no duplicates or unrelated certificates
   - validity dates (expired / not yet valid / expires within 30 days), leaf outliving its issuer
   - SAN present, serverAuth usage, weak keys (RSA < 2048) or weak hashes (SHA-1/MD5)
-  - a missing root is looked up in the system / Mozilla trust store (public CA vs. private CA)
   - optional: use the **other files in the same folder** to complete the chain (for customers who send
     `server.crt`, `intermediate.crt` and `root.crt` separately)
 - **Private key check**: choose a `.key` (or `.pfx`) to confirm it matches the leaf certificate.
 - Full details for each certificate: Subject (CN=…), Issuer, validity, serial, SANs, key, fingerprints…
 - Copy or export the report as text.
 
-**Compare current vs new** tab
+**Compare**
 - Browse the **current** and the **new** certificate. Side-by-side table with differing rows highlighted
   (Subject CN, Subject, Issuer, validity dates, days remaining, SANs, key, signature algorithm, serial, fingerprints…).
 - Summary: CN changed?, SAN names added/removed, issuer changed (new intermediate needed), new expiry vs. old,
@@ -37,11 +37,13 @@ Requires Python 3.9+ with Tkinter (included in the python.org installer for Wind
 on Debian/Ubuntu: `sudo apt install python3-tk`).
 
 ```bash
-pip install -r requirements.txt
+py -m pip install -r requirements.txt
 ```
 
+(On macOS/Linux use `python3 -m pip …`.)
+
 ```bash
-python -m ssl_validator
+py -m ssl_validator
 ```
 
 On Windows you can also double-click `ssl_validator.pyw`.
@@ -65,7 +67,7 @@ pip install pyinstaller
 ```
 
 ```bash
-pyinstaller --onefile --windowed --name SSLValidator --collect-data certifi ssl_validator.pyw
+pyinstaller --onefile --windowed --name SSLValidator ssl_validator.pyw
 ```
 
 ## Tests

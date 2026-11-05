@@ -1,2 +1,1 @@
-cryptography>=42
-certifi
+cryptography>=40

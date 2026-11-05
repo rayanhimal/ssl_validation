@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import datetime as _dt
 import os
-import warnings
 from dataclasses import dataclass, field
 from typing import Iterable
 
@@ -48,7 +47,7 @@ class CertLoadError(Exception):
 @dataclass
 class CertInfo:
     cert: x509.Certificate
-    source: str  # file path the certificate came from (or "system trust store")
+    source: str  # file path the certificate came from
     index_in_file: int = 0
 
     # ---- identity -------------------------------------------------------
@@ -291,8 +290,8 @@ class ChainResult:
 
     chain: list[CertInfo]  # leaf first, root last (as far as we could build it)
     complete: bool  # ends with a self-signed root
-    root_from_trust_store: bool = False
     missing_issuer: str = ""  # issuer DN we could not find
+    missing_issuer_cn: str = ""
     findings: list[Finding] = field(default_factory=list)
 
     @property
@@ -326,8 +325,7 @@ class Analysis:
             out.append(f"Chain #{n}: {'COMPLETE' if c.complete else 'INCOMPLETE'}")
             for depth, ci in enumerate(reversed(c.chain)):
                 prefix = "  " + "   " * depth + "└─ "
-                origin = " (from trust store)" if ci.source == TRUST_STORE else ""
-                origin = origin or ("" if ci.source == self._main_source else f" (from {os.path.basename(ci.source)})")
+                origin = "" if ci.source == self._main_source else f" (from {os.path.basename(ci.source)})"
                 out.append(f"{prefix}[{ci.role}] {ci.display_name}{origin}")
             for f in c.findings:
                 out.append(f"  [{f.severity}] {f.message}")
@@ -342,8 +340,6 @@ class Analysis:
     def _main_source(self) -> str:
         return self.file_certs[0].source if self.file_certs else ""
 
-
-TRUST_STORE = "system trust store"
 
 SEVERITY_ORDER = {OK: 0, INFO: 1, WARN: 2, ERROR: 3}
 
@@ -583,60 +579,6 @@ def load_folder_certs(folder: str, exclude: str | None = None) -> list[CertInfo]
     return out
 
 
-_TRUST_STORE_CACHE: list[CertInfo] | None = None
-
-
-def load_trust_store() -> list[CertInfo]:
-    """Load public root CAs (Mozilla bundle via certifi, else the OS bundle)."""
-    global _TRUST_STORE_CACHE
-    if _TRUST_STORE_CACHE is not None:
-        return _TRUST_STORE_CACHE
-    paths = []
-    try:
-        import certifi
-
-        paths.append(certifi.where())
-    except ImportError:
-        pass
-    paths += [
-        "/etc/ssl/certs/ca-certificates.crt",
-        "/etc/pki/tls/certs/ca-bundle.crt",
-        "/etc/ssl/cert.pem",
-    ]
-    certs: list[CertInfo] = []
-    for p in paths:
-        if os.path.isfile(p):
-            try:
-                with open(p, "rb") as fh, warnings.catch_warnings():
-                    warnings.simplefilter("ignore")
-                    certs = [CertInfo(c, TRUST_STORE) for c in _parse_pem_blocks(fh.read())]
-                if certs:
-                    break
-            except OSError:
-                continue
-    if not certs:
-        certs = _windows_trust_store()
-    _TRUST_STORE_CACHE = certs
-    return certs
-
-
-def _windows_trust_store() -> list[CertInfo]:
-    try:
-        import ssl
-
-        out = []
-        for store in ("ROOT",):  # roots only, so missing intermediates are still reported
-            for der, enc, _trust in ssl.enum_certificates(store):  # type: ignore[attr-defined]
-                if enc == "x509_asn":
-                    try:
-                        out.append(CertInfo(x509.load_der_x509_certificate(der), TRUST_STORE))
-                    except ValueError:
-                        pass
-        return out
-    except Exception:
-        return []
-
-
 # --------------------------------------------------------------------------
 # Chain building & validation
 # --------------------------------------------------------------------------
@@ -663,11 +605,11 @@ def find_issuer(ci: CertInfo, pool: list[CertInfo]) -> CertInfo | None:
     return None
 
 
-def build_chain(start: CertInfo, pool: list[CertInfo], trust_store: list[CertInfo] | None = None) -> ChainResult:
+def build_chain(start: CertInfo, pool: list[CertInfo]) -> ChainResult:
     chain = [start]
     current = start
-    root_from_store = False
     missing = ""
+    missing_cn = ""
     while True:
         if current.is_self_signed:
             break
@@ -675,17 +617,14 @@ def build_chain(start: CertInfo, pool: list[CertInfo], trust_store: list[CertInf
             break
         used = {c.fingerprint_sha256 for c in chain}
         issuer = find_issuer(current, [p for p in pool if p.fingerprint_sha256 not in used])
-        if issuer is None and trust_store:
-            issuer = find_issuer(current, trust_store)
-            if issuer is not None:
-                root_from_store = True
         if issuer is None:
             missing = current.issuer
+            missing_cn = current.issuer_cn
             break
         chain.append(issuer)
         current = issuer
     complete = chain[-1].is_self_signed
-    return ChainResult(chain=chain, complete=complete, root_from_trust_store=root_from_store, missing_issuer=missing)
+    return ChainResult(chain=chain, complete=complete, missing_issuer=missing, missing_issuer_cn=missing_cn)
 
 
 def _end_entities(certs: list[CertInfo]) -> list[CertInfo]:
@@ -703,14 +642,13 @@ def _end_entities(certs: list[CertInfo]) -> list[CertInfo]:
 def analyze(
     file_certs: list[CertInfo],
     extra_pool: list[CertInfo] | None = None,
-    use_trust_store: bool = True,
     private_key=None,
     now: _dt.datetime | None = None,
 ) -> Analysis:
     """Analyse the certificates found in one file.
 
     extra_pool: other certificates (e.g. the rest of the folder) that may be used to
-    complete the chain. use_trust_store: look for a missing root in the public trust store.
+    complete the chain.
     """
     now = now or _now()
     findings: list[Finding] = []
@@ -726,13 +664,12 @@ def analyze(
     )))
 
     pool = _dedupe(file_certs_u + (extra_pool or []))
-    trust = load_trust_store() if use_trust_store else []
 
     # Chains start at end-entity certs present in the file.
     starts = _end_entities(file_certs_u) or file_certs_u[:1]
     chains = []
     for s in starts:
-        res = build_chain(s, pool, trust)
+        res = build_chain(s, pool)
         _check_chain(res, file_certs_u, now)
         chains.append(res)
 
@@ -783,7 +720,7 @@ def _check_chain(res: ChainResult, file_certs: list[CertInfo], now: _dt.datetime
         if c.fingerprint_sha256 in file_fps:
             f.append(Finding(OK, f"Intermediate present in file: {c.display_name}"))
         else:
-            f.append(Finding(WARN, f"Intermediate '{c.display_name}' is NOT in the file (found in {os.path.basename(c.source) if c.source != TRUST_STORE else TRUST_STORE})."))
+            f.append(Finding(WARN, f"Intermediate '{c.display_name}' is NOT in the file (found in {os.path.basename(c.source)})."))
 
     if res.complete:
         root = res.chain[-1]
@@ -791,14 +728,8 @@ def _check_chain(res: ChainResult, file_certs: list[CertInfo], now: _dt.datetime
             pass
         elif root.fingerprint_sha256 in file_fps:
             f.append(Finding(OK, f"Root certificate present in file: {root.display_name}"))
-        elif root.source == TRUST_STORE:
-            f.append(Finding(INFO, f"Root '{root.display_name}' is not in the file but is a publicly trusted root (system trust store). This is normal: servers usually don't send the root."))
         else:
             f.append(Finding(INFO, f"Root '{root.display_name}' is not in the file (found in {os.path.basename(root.source)})."))
-        if root.source != TRUST_STORE and root is not leaf:
-            trust = load_trust_store()
-            if trust and root.fingerprint_sha256 not in {t.fingerprint_sha256 for t in trust}:
-                f.append(Finding(INFO, f"Root '{root.display_name}' is a private/internal CA (not in the public trust store)."))
         f.append(Finding(OK, "Chain is COMPLETE and all signatures are valid."))
     else:
         last = res.chain[-1]
@@ -841,8 +772,6 @@ def _check_chain(res: ChainResult, file_certs: list[CertInfo], now: _dt.datetime
 
     # Crypto strength
     for c in res.chain:
-        if c.is_self_signed and c.source == TRUST_STORE:
-            continue
         key = c.cert.public_key()
         if isinstance(key, rsa.RSAPublicKey) and key.key_size < 2048:
             f.append(Finding(ERROR, f"'{c.display_name}' uses a weak RSA key ({key.key_size} bits)."))

@@ -72,7 +72,7 @@ def test_full_chain(tmp_path, pki):
     p = write(tmp_path, "full.pem", pem(pki["leaf"], pki["inter"], pki["root"]))
     certs = cc.load_certificates(p)
     assert [c.role for c in certs] == ["Leaf", "Intermediate", "Root"]
-    a = cc.analyze(certs, use_trust_store=False)
+    a = cc.analyze(certs)
     assert len(a.chains) == 1 and a.chains[0].complete
     assert a.worst in (cc.OK, cc.INFO)
     assert any("correct order" in m for _, m in sev_msgs(a))
@@ -80,14 +80,14 @@ def test_full_chain(tmp_path, pki):
 
 def test_reverse_order(tmp_path, pki):
     p = write(tmp_path, "rev.pem", pem(pki["root"], pki["inter"], pki["leaf"]))
-    a = cc.analyze(cc.load_certificates(p), use_trust_store=False)
+    a = cc.analyze(cc.load_certificates(p))
     assert a.chains[0].complete
     assert any("REVERSE" in m for _, m in sev_msgs(a))
 
 
 def test_missing_intermediate(tmp_path, pki):
     p = write(tmp_path, "leaf.crt", pem(pki["leaf"]))
-    a = cc.analyze(cc.load_certificates(p), use_trust_store=False)
+    a = cc.analyze(cc.load_certificates(p))
     assert not a.chains[0].complete
     assert a.worst == cc.ERROR
     assert "Test Intermediate CA" in a.chains[0].missing_issuer
@@ -95,7 +95,7 @@ def test_missing_intermediate(tmp_path, pki):
 
 def test_leaf_and_intermediate_without_root(tmp_path, pki):
     p = write(tmp_path, "chain.crt", pem(pki["leaf"], pki["inter"]))
-    a = cc.analyze(cc.load_certificates(p), use_trust_store=False)
+    a = cc.analyze(cc.load_certificates(p))
     assert not a.chains[0].complete
     assert "Test Root CA" in a.chains[0].missing_issuer
 
@@ -105,7 +105,7 @@ def test_chain_completed_from_folder(tmp_path, pki):
     write(tmp_path, "intermediate.cer", pki["inter"].public_bytes(serialization.Encoding.DER))
     write(tmp_path, "root.pem", pem(pki["root"]))
     pool = cc.load_folder_certs(str(tmp_path), exclude=leaf)
-    a = cc.analyze(cc.load_certificates(leaf), extra_pool=pool, use_trust_store=False)
+    a = cc.analyze(cc.load_certificates(leaf), extra_pool=pool)
     assert a.chains[0].complete
     assert any("NOT in the file" in m for _, m in sev_msgs(a))
 
@@ -129,16 +129,16 @@ def test_private_key_match(tmp_path, pki):
     kp = write(tmp_path, "server.key", pki["leaf_key"].private_bytes(
         serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
     key = cc.load_private_key(kp)
-    a = cc.analyze([cc.CertInfo(pki["leaf"], "x")], private_key=key, use_trust_store=False)
+    a = cc.analyze([cc.CertInfo(pki["leaf"], "x")], private_key=key)
     assert a.private_key_match is True
     other = ec.generate_private_key(ec.SECP256R1())
-    a = cc.analyze([cc.CertInfo(pki["leaf"], "x")], private_key=other, use_trust_store=False)
+    a = cc.analyze([cc.CertInfo(pki["leaf"], "x")], private_key=other)
     assert a.private_key_match is False
 
 
 def test_expired_detected(pki):
     old, _ = make_cert("old.example.com", pki["inter"], pki["inter_key"], days=-1, start_offset=-400)
-    a = cc.analyze([cc.CertInfo(old, "x"), cc.CertInfo(pki["inter"], "x")], use_trust_store=False)
+    a = cc.analyze([cc.CertInfo(old, "x"), cc.CertInfo(pki["inter"], "x")])
     assert any(s == cc.ERROR and "EXPIRED" in m for s, m in sev_msgs(a))
 
 
@@ -176,11 +176,3 @@ def test_non_cert_file(tmp_path):
     p = write(tmp_path, "junk.crt", b"not a certificate")
     with pytest.raises(cc.CertLoadError):
         cc.load_certificates(p)
-
-
-def test_trust_store_root(tmp_path):
-    # A real public root should be found in certifi's bundle
-    store = cc.load_trust_store()
-    if not store:
-        pytest.skip("no trust store available")
-    assert all(c.source == cc.TRUST_STORE for c in store)

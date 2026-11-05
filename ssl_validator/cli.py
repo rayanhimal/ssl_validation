@@ -22,7 +22,6 @@ def main(argv=None) -> int:
     v.add_argument("file")
     v.add_argument("--key", help="private key file to check against the leaf")
     v.add_argument("--no-folder", action="store_true", help="don't use other certs in the same folder")
-    v.add_argument("--no-trust-store", action="store_true", help="don't look up roots in the system trust store")
     c = sub.add_parser("compare", help="compare current and new certificate")
     c.add_argument("current")
     c.add_argument("new")
@@ -37,7 +36,7 @@ def main(argv=None) -> int:
                 key = cc.load_private_key(a.key)
             except cc.PasswordRequired:
                 key = cc.load_private_key(a.key, getpass.getpass(f"Password for {a.key}: "))
-        res = cc.analyze(certs, extra_pool=pool, use_trust_store=not a.no_trust_store, private_key=key)
+        res = cc.analyze(certs, extra_pool=pool, private_key=key)
         print(res.report_text())
         return 2 if res.worst == cc.ERROR else (1 if res.worst == cc.WARN else 0)
 

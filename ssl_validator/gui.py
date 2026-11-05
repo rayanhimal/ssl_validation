@@ -58,9 +58,9 @@ def init_style(root: tk.Tk) -> None:
     ui = _pick(root, UI_FONTS)
     mono = _pick(root, MONO_FONTS)
     F.update(
-        title=(ui, 20, "bold"),
-        subtitle=(ui, 11),
-        banner=(ui, 16, "bold"),
+        title=(ui, 18, "bold"),
+        subtitle=(ui, 10),
+        banner=(ui, 14, "bold"),
         section=(ui, 12, "bold"),
         body=(ui, 10),
         body_bold=(ui, 10, "bold"),
@@ -292,6 +292,7 @@ class ValidatePage(tk.Frame):
         self.pw = pw
         self.folder: str | None = None
         self.current_file: str | None = None
+        self.last_file: str | None = None  # remembered after "Clear" so "Reload" still works
         self.key = None
         self.key_path: str | None = None
         self.analysis: cc.Analysis | None = None
@@ -306,6 +307,9 @@ class ValidatePage(tk.Frame):
         RoundButton(bar, "Choose Folder…", self.browse_folder, "primary").pack(side="left")
         RoundButton(bar, "Open File…", self.open_file).pack(side="left", padx=(8, 0))
         RoundButton(bar, "Private Key…", self.choose_key).pack(side="left", padx=(8, 0))
+        tk.Frame(bar, bg=BORDER, width=1, height=22).pack(side="left", padx=14)
+        RoundButton(bar, "↻  Reload File", self.reload_file).pack(side="left")
+        RoundButton(bar, "✕  Clear Results", self.clear_results).pack(side="left", padx=(8, 0))
         RoundButton(bar, "Export Report…", self.export_report).pack(side="right")
         RoundButton(bar, "Copy Report", self.copy_report).pack(side="right", padx=8)
 
@@ -346,7 +350,7 @@ class ValidatePage(tk.Frame):
         self.banner_bar = tk.Frame(banner, bg=BORDER, width=6)
         self.banner_bar.pack(side="left", fill="y")
         inner = tk.Frame(banner, bg=CARD)
-        inner.pack(side="left", fill="both", expand=True, padx=18, pady=12)
+        inner.pack(side="left", fill="both", expand=True, padx=16, pady=6)
         self.banner_title = tk.Label(inner, text="No certificate selected", font=F["banner"], bg=CARD, fg=TEXT, anchor="w")
         self.banner_title.pack(fill="x")
         self.banner_sub = tk.Label(inner, text="Choose a folder or open a certificate file to validate it.",
@@ -474,15 +478,44 @@ class ValidatePage(tk.Frame):
     # ---- analysis ------------------------------------------------------
     def _on_file_select(self, _evt=None):
         sel = self.files.selection()
-        if sel and os.path.isfile(sel[0]):
+        if sel and os.path.isfile(sel[0]) and not (sel[0] == self.current_file and self.analysis):
             self.analyze_file(sel[0])
+
+    def clear_results(self):
+        """Clear the results; the file is remembered so Reload can check it again."""
+        self.last_file = self.current_file or self.last_file
+        self.current_file = None
+        self.analysis = None
+        self._clear()
+        self._set_details("")
+        self.files.selection_remove(*self.files.selection())
+        self._banner(None, "No certificate selected",
+                     "Results cleared. Click Reload File to check "
+                     f"{os.path.basename(self.last_file)} again." if self.last_file
+                     else "Choose a folder or open a certificate file to validate it.")
+
+    def reload_file(self):
+        """Read the last file again from disk (e.g. after it was replaced) and re-run all checks."""
+        path = self.current_file or self.last_file
+        if not path:
+            messagebox.showinfo(APP_TITLE, "Open a certificate file first.", parent=self)
+            return
+        if not os.path.isfile(path):
+            messagebox.showerror(APP_TITLE, f"File no longer exists:\n{path}", parent=self)
+            return
+        self.pw.passwords.pop(path, None)  # file may have changed: ask again if needed
+        self.refresh_folder()  # pick up new / renamed files in the folder too
+        self.analyze_file(path)
+        if self.files.exists(path):
+            self.files.selection_set(path)
+            self.files.see(path)
 
     def reanalyze(self):
         if self.current_file:
             self.analyze_file(self.current_file)
 
     def analyze_file(self, path: str):
-        self.current_file = path
+        self.current_file = self.last_file = path
         try:
             certs = self.pw.load_certs(path)
         except cc.PasswordRequired:
@@ -696,7 +729,8 @@ class ComparePage(tk.Frame):
         bar = tk.Frame(self, bg=BG)
         bar.pack(fill="x", padx=24, pady=10)
         checkbox(bar, "Show only differences", self.only_diff, self._fill_table).pack(side="left")
-        RoundButton(bar, "⇄  Swap", self.swap).pack(side="left", padx=16)
+        RoundButton(bar, "⇄  Swap", self.swap).pack(side="left", padx=(16, 8))
+        RoundButton(bar, "✕  Clear", self.clear).pack(side="left")
         tk.Label(bar, text="Highlighted rows differ · double-click a row to see full values",
                  font=F["small"], bg=BG, fg=MUTED).pack(side="right")
 
@@ -716,6 +750,10 @@ class ComparePage(tk.Frame):
             self.table.column(c, width=w, minwidth=80, anchor="w")
         self.table.bind("<Double-1>", self._show_row)
         pane.add(tbl_card, weight=3)
+
+    def clear(self):
+        self.old.set_state([], "", -1)
+        self.new.set_state([], "", -1)
 
     def swap(self):
         a, b = self.old.get_state(), self.new.get_state()
@@ -792,16 +830,16 @@ class App(tk.Tk):
         header = tk.Frame(self, bg=CARD)
         header.pack(fill="x")
         inner = tk.Frame(header, bg=CARD)
-        inner.pack(fill="x", padx=28, pady=16)
+        inner.pack(fill="x", padx=28, pady=9)
 
-        icon = tk.Canvas(inner, width=46, height=46, bg=CARD, highlightthickness=0)
-        round_rect(icon, 1, 1, 45, 45, 12, fill=ACCENT, outline="")
+        icon = tk.Canvas(inner, width=40, height=40, bg=CARD, highlightthickness=0)
+        round_rect(icon, 1, 1, 39, 39, 10, fill=ACCENT, outline="")
         # simple padlock glyph
-        icon.create_arc(15, 9, 31, 27, start=0, extent=180, style="arc", outline="#ffffff", width=3)
-        icon.create_line(15, 18, 15, 22, fill="#ffffff", width=3)
-        icon.create_line(31, 18, 31, 22, fill="#ffffff", width=3)
-        round_rect(icon, 11, 21, 35, 38, 4, fill="#ffffff", outline="")
-        icon.create_oval(21, 26, 25, 30, fill=ACCENT, outline="")
+        icon.create_arc(13, 8, 27, 23, start=0, extent=180, style="arc", outline="#ffffff", width=3)
+        icon.create_line(13, 15, 13, 19, fill="#ffffff", width=3)
+        icon.create_line(27, 15, 27, 19, fill="#ffffff", width=3)
+        round_rect(icon, 9, 18, 31, 33, 4, fill="#ffffff", outline="")
+        icon.create_oval(18, 23, 22, 27, fill=ACCENT, outline="")
         icon.pack(side="left")
 
         titles = tk.Frame(inner, bg=CARD)
@@ -813,7 +851,7 @@ class App(tk.Tk):
         self.pages = tk.Frame(self, bg=BG)
         self.validate_page = ValidatePage(self.pages, pw)
         self.compare_page = ComparePage(self.pages, pw)
-        self.segmented = Segmented(inner, ["Validate", "Compare"], self._show_page)
+        self.segmented = Segmented(inner, ["Validate", "Compare"], self._show_page, height=30)
         self.segmented.pack(side="right")
 
         tk.Frame(self, bg=BORDER, height=1).pack(fill="x")

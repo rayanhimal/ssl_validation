@@ -17,6 +17,8 @@ Clean macOS-style interface; uses SF Pro / Helvetica Neue on macOS and Segoe UI 
   - SAN present, serverAuth usage, weak keys (RSA < 2048) or weak hashes (SHA-1/MD5)
   - optional: use the **other files in the same folder** to complete the chain (for customers who send
     `server.crt`, `intermediate.crt` and `root.crt` separately)
+- **Reload File** re-reads the file from disk and runs all checks again (also after **Clear Results**);
+  **Clear Results** empties the result panels.
 - **Private key check**: choose a `.key` (or `.pfx`) to confirm it matches the leaf certificate.
 - Full details for each certificate: Subject (CN=…), Issuer, validity, serial, SANs, key, fingerprints…
 - Copy or export the report as text.

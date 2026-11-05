@@ -176,3 +176,39 @@ def test_non_cert_file(tmp_path):
     p = write(tmp_path, "junk.crt", b"not a certificate")
     with pytest.raises(cc.CertLoadError):
         cc.load_certificates(p)
+
+
+DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+
+
+def test_sha1_self_signed_root_is_recognised():
+    # Real public root, self-signed with SHA-1 (cryptography refuses to verify SHA-1
+    # itself, which used to make this root look like a "missing issuer" intermediate).
+    root = cc.load_certificates(os.path.join(DATA, "certum_trusted_network_ca.pem"))[0]
+    assert root.is_self_signed and root.role == "Root"
+    a = cc.analyze([root])
+    assert a.chains[0].complete
+    assert not any("SHA1" in m for _, m in sev_msgs(a))  # a root's own signature hash is irrelevant
+
+
+def test_wrong_key_with_legacy_signature_rejected():
+    root = cc.load_certificates(os.path.join(DATA, "certum_trusted_network_ca.pem"))[0].cert
+    other_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    impostor = (x509.CertificateBuilder().subject_name(root.subject).issuer_name(root.subject)
+                .public_key(other_key.public_key()).serial_number(2)
+                .not_valid_before(NOW).not_valid_after(NOW + dt.timedelta(days=10))
+                .sign(other_key, hashes.SHA256()))
+    assert not cc.signed_by(root, impostor)  # same name, different key -> must fail
+    assert cc.signed_by(root, root)
+
+
+def test_no_order_warning_for_pfx(tmp_path, pki):
+    pfx = pkcs12.serialize_key_and_certificates(
+        b"x", pki["leaf_key"], pki["leaf"], [pki["root"], pki["inter"]], serialization.NoEncryption())
+    p = write(tmp_path, "bundle.pfx", pfx)
+    a = cc.analyze(cc.load_certificates(p))
+    assert a.chains[0].complete
+    assert not any("order" in m.lower() for _, m in sev_msgs(a))
+    # ...but a PEM in the wrong order is still flagged
+    p2 = write(tmp_path, "bad.pem", pem(pki["leaf"], pki["root"], pki["inter"]))
+    assert any("not in chain order" in m for _, m in sev_msgs(cc.analyze(cc.load_certificates(p2))))

@@ -13,7 +13,7 @@ from typing import Iterable
 
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import dsa, ec, ed448, ed25519, rsa
+from cryptography.hazmat.primitives.asymmetric import dsa, ec, ed448, ed25519, padding, rsa
 from cryptography.hazmat.primitives.serialization import pkcs7, pkcs12
 from cryptography.x509.oid import ExtendedKeyUsageOID, ExtensionOID, NameOID
 
@@ -22,6 +22,8 @@ CERT_EXTENSIONS = {
     ".p7b", ".p7c", ".pfx", ".p12", ".chain",
 }
 KEY_EXTENSIONS = {".key", ".pem"}
+
+UNORDERED_EXTENSIONS = {".pfx", ".p12", ".p7b", ".p7c"}
 
 EXPIRY_WARNING_DAYS = 30
 
@@ -401,8 +403,32 @@ def describe_key(key) -> str:
 
 def signed_by(cert: x509.Certificate, issuer: x509.Certificate) -> bool:
     """True if `cert` was issued (name match + valid signature) by `issuer`."""
+    if cert.issuer != issuer.subject:
+        return False
     try:
         cert.verify_directly_issued_by(issuer)
+        return True
+    except ValueError:
+        # cryptography refuses legacy algorithms (e.g. SHA-1, used by many old
+        # roots such as "Certum Trusted Network CA"); verify the signature manually.
+        return _verify_legacy_signature(cert, issuer)
+    except Exception:
+        return False
+
+
+def _verify_legacy_signature(cert: x509.Certificate, issuer: x509.Certificate) -> bool:
+    try:
+        h = cert.signature_hash_algorithm
+        key = issuer.public_key()
+        sig, tbs = cert.signature, cert.tbs_certificate_bytes
+        if isinstance(key, rsa.RSAPublicKey):
+            key.verify(sig, tbs, padding.PKCS1v15(), h)
+        elif isinstance(key, ec.EllipticCurvePublicKey):
+            key.verify(sig, tbs, ec.ECDSA(h))
+        elif isinstance(key, dsa.DSAPublicKey):
+            key.verify(sig, tbs, h)
+        else:
+            return False
         return True
     except Exception:
         return False
@@ -680,7 +706,10 @@ def analyze(
             findings.append(Finding(WARN, f"Certificate '{c.display_name}' is not related to the chain (extra/unrelated certificate)."))
 
     # Order check: servers (nginx/Apache/HAProxy) expect leaf first, then issuers in order.
-    if len(file_certs_u) > 1 and len(chains) == 1:
+    # Not done for PKCS#12 / PKCS#7: those containers have no meaningful order
+    # (Windows/IIS and other importers build the chain themselves).
+    container = os.path.splitext(file_certs_u[0].source.lower())[1] in UNORDERED_EXTENSIONS if file_certs_u else False
+    if len(file_certs_u) > 1 and len(chains) == 1 and not container:
         expected = [c.fingerprint_sha256 for c in chains[0].chain if c.fingerprint_sha256 in {f.fingerprint_sha256 for f in file_certs_u}]
         actual = [c.fingerprint_sha256 for c in file_certs_u if c.fingerprint_sha256 in set(expected)]
         if expected == actual:

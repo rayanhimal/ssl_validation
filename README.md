@@ -19,7 +19,7 @@ Clean macOS-style interface; uses SF Pro / Helvetica Neue on macOS and Segoe UI 
     `server.crt`, `intermediate.crt` and `root.crt` separately)
 - **Reload File** re-reads the file from disk and runs all checks again (also after **Clear Results**);
   **Clear Results** empties the result panels.
-- **Private key check**: choose a `.key` (or `.pfx`) to confirm it matches the leaf certificate.
+- **`.pfx` files**: the private key inside is checked automatically against the leaf certificate.
 - Full details for each certificate: Subject (CN=…), Issuer, validity, serial, SANs, key, fingerprints…
 - Copy or export the report as text.
 
@@ -31,7 +31,7 @@ Clean macOS-style interface; uses SF Pro / Helvetica Neue on macOS and Segoe UI 
 - If a file contains several certificates, the leaf is picked automatically; use the drop-down to choose another.
 
 Supported formats: PEM (`.pem .crt .cer .ca-bundle`, single or bundled), DER (`.der .cer`),
-PKCS#7 (`.p7b .p7c`), PKCS#12 (`.pfx .p12`, password asked when needed).
+PKCS#7 (`.p7b .p7c`), PKCS#12 (`.pfx .p12`, password asked when needed; the Compare page asks every time and never reuses a password typed on the Validate page).
 
 ## Install & run
 

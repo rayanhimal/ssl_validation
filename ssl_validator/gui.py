@@ -16,7 +16,6 @@ FILE_TYPES = [
     ("Certificate files", "*.pem *.crt *.cer *.cert *.der *.p7b *.p7c *.pfx *.p12 *.ca-bundle *.bundle *.chain"),
     ("All files", "*.*"),
 ]
-KEY_TYPES = [("Private keys", "*.key *.pem *.pfx *.p12"), ("All files", "*.*")]
 
 # ---------------------------------------------------------------------------
 # Look & feel (light macOS palette)
@@ -239,10 +238,15 @@ def checkbox(parent, text, var, command=None):
 # ---------------------------------------------------------------------------
 
 class PasswordCache:
-    """Asks for PKCS#12 / encrypted key passwords once per file."""
+    """Asks for PKCS#12 passwords.
 
-    def __init__(self, root: tk.Misc):
+    remember=True keeps the password per file for this page (so browsing / re-checking
+    does not ask again); remember=False asks every time a file is opened.
+    """
+
+    def __init__(self, root: tk.Misc, remember: bool = True):
         self.root = root
+        self.remember = remember
         self.passwords: dict[str, str] = {}
 
     def _ask(self, path, retry):
@@ -254,33 +258,13 @@ class PasswordCache:
         while True:
             try:
                 certs = cc.load_certificates(path, pw)
-                if pw is not None:
+                if pw is not None and self.remember:
                     self.passwords[path] = pw
                 return certs
             except cc.PasswordRequired:
                 pw = self._ask(path, pw is not None)
                 if pw is None:
                     raise
-
-    def load_key(self, path: str):
-        pw = self.passwords.get(path)
-        ext = os.path.splitext(path.lower())[1]
-        while True:
-            try:
-                if ext in (".pfx", ".p12"):
-                    key = cc.load_pkcs12_key(path, pw)
-                    if key is None:
-                        raise cc.PasswordRequired("")
-                else:
-                    key = cc.load_private_key(path, pw)
-                if pw is not None:
-                    self.passwords[path] = pw
-                return key
-            except cc.PasswordRequired:
-                pw = self._ask(path, pw is not None)
-                if pw is None:
-                    raise
-
 
 # ---------------------------------------------------------------------------
 # Validate page
@@ -293,8 +277,6 @@ class ValidatePage(tk.Frame):
         self.folder: str | None = None
         self.current_file: str | None = None
         self.last_file: str | None = None  # remembered after "Clear" so "Reload" still works
-        self.key = None
-        self.key_path: str | None = None
         self.analysis: cc.Analysis | None = None
         self.chain_items: dict[str, cc.CertInfo] = {}
         self.use_folder = tk.BooleanVar(value=True)
@@ -306,7 +288,6 @@ class ValidatePage(tk.Frame):
         bar.pack(fill="x", padx=24, pady=(18, 6))
         RoundButton(bar, "Choose Folder…", self.browse_folder, "primary").pack(side="left")
         RoundButton(bar, "Open File…", self.open_file).pack(side="left", padx=(8, 0))
-        RoundButton(bar, "Private Key…", self.choose_key).pack(side="left", padx=(8, 0))
         tk.Frame(bar, bg=BORDER, width=1, height=22).pack(side="left", padx=14)
         RoundButton(bar, "↻  Reload File", self.reload_file).pack(side="left")
         RoundButton(bar, "✕  Clear Results", self.clear_results).pack(side="left", padx=(8, 0))
@@ -318,12 +299,6 @@ class ValidatePage(tk.Frame):
         checkbox(opts, "Use other certificates in the same folder to complete the chain",
                  self.use_folder, self.reanalyze).pack(side="left")
         checkbox(opts, "Include sub-folders", self.recursive, self.refresh_folder).pack(side="left", padx=(20, 0))
-        self.key_box = tk.Frame(opts, bg=BG)
-        self.key_box.pack(side="right")
-        self.key_label = tk.Label(self.key_box, text="", font=F["body"], bg=BG, fg=MUTED)
-        self.key_label.pack(side="left")
-        self.key_remove = tk.Label(self.key_box, text="Remove", font=F["body"], bg=BG, fg=ACCENT, cursor="hand2")
-        self.key_remove.bind("<Button-1>", lambda e: self.clear_key())
 
         paned = ttk.PanedWindow(self, orient="horizontal")
         paned.pack(fill="both", expand=True, padx=24, pady=(0, 20))
@@ -451,30 +426,6 @@ class ValidatePage(tk.Frame):
         else:
             self.analyze_file(path)
 
-    # ---- private key ---------------------------------------------------
-    def choose_key(self):
-        path = filedialog.askopenfilename(title="Open private key", filetypes=KEY_TYPES, parent=self)
-        if not path:
-            return
-        try:
-            self.key = self.pw.load_key(path)
-        except cc.PasswordRequired:
-            return
-        except Exception as e:
-            messagebox.showerror(APP_TITLE, f"Could not load private key:\n{e}", parent=self)
-            return
-        self.key_path = path
-        self.key_label.configure(text=f"Private key: {os.path.basename(path)}  ")
-        self.key_remove.pack(side="left")
-        self.reanalyze()
-
-    def clear_key(self):
-        self.key = None
-        self.key_path = None
-        self.key_label.configure(text="")
-        self.key_remove.pack_forget()
-        self.reanalyze()
-
     # ---- analysis ------------------------------------------------------
     def _on_file_select(self, _evt=None):
         sel = self.files.selection()
@@ -525,8 +476,8 @@ class ValidatePage(tk.Frame):
             self._show_error(path, str(e))
             return
         pool = cc.load_folder_certs(os.path.dirname(path), exclude=path) if self.use_folder.get() else []
-        key = self.key
-        if key is None and os.path.splitext(path.lower())[1] in (".pfx", ".p12"):
+        key = None  # a .pfx contains its own private key: check that it matches
+        if os.path.splitext(path.lower())[1] in (".pfx", ".p12"):
             key = cc.load_pkcs12_key(path, self.pw.passwords.get(path))
         try:
             self.analysis = cc.analyze(certs, extra_pool=pool, private_key=key)
@@ -824,7 +775,6 @@ class App(tk.Tk):
         self.geometry("1360x900")
         self.minsize(1000, 680)
         init_style(self)
-        pw = PasswordCache(self)
 
         # Header: wide, clean title bar
         header = tk.Frame(self, bg=CARD)
@@ -849,8 +799,10 @@ class App(tk.Tk):
                  bg=CARD, fg=MUTED, anchor="w").pack(fill="x")
 
         self.pages = tk.Frame(self, bg=BG)
-        self.validate_page = ValidatePage(self.pages, pw)
-        self.compare_page = ComparePage(self.pages, pw)
+        # Separate password handling per page: a password typed on the Validate page
+        # is never reused on the Compare page, which asks every time a file is opened.
+        self.validate_page = ValidatePage(self.pages, PasswordCache(self))
+        self.compare_page = ComparePage(self.pages, PasswordCache(self, remember=False))
         self.segmented = Segmented(inner, ["Validate", "Compare"], self._show_page, height=30)
         self.segmented.pack(side="right")
 
